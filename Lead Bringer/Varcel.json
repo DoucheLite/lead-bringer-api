@@ -1,0 +1,21 @@
+{
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "main.py"
+    }
+  ],
+  "env": {
+    "AIRTABLE_API_TOKEN": "@airtable_api_token",
+    "AIRTABLE_BASE_ID": "@airtable_base_id",
+    "AIRTABLE_COMPANIES_TABLE_ID": "@airtable_companies_table_id",
+    "AIRTABLE_CALLS_TABLE_ID": "@airtable_calls_table_id",
+    "AIRTABLE_NO_CALL_TABLE_ID": "@airtable_no_call_table_id"
+  }
+}
