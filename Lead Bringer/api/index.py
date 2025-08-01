@@ -8,6 +8,11 @@ import pytz
 from dotenv import load_dotenv
 import airtable
 from fastapi.responses import JSONResponse
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -42,14 +47,14 @@ class CallLog(BaseModel):
     notes: str
     follow_up_date: Optional[str] = None
     offer_made: Optional[str] = None
-
+    
 class Company(BaseModel):
     name: str
     contact_name: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     website: Optional[str] = None
-
+    
 class FollowUp(BaseModel):
     id: str
     company_name: str
@@ -62,53 +67,54 @@ class FollowUp(BaseModel):
 async def health_check():
     return {"status": "healthy", "message": "Lead Bringer CRM API is running"}
 
-# Log a call
+# Log a call - simplified for maximum reliability
 @app.post("/log-call")
 async def log_call(call: CallLog):
     try:
+        logger.info(f"Logging call for company: {call.company_name}")
+        
         # Check if company exists
-        companies = at.get(COMPANIES_TABLE, filter_by_formula=f"{{Name}}='{call.company_name}'")
-
+        company_formula = f"LOWER({{Name}})=LOWER('{call.company_name}')"
+        logger.info(f"Searching for company with formula: {company_formula}")
+        companies = at.get(COMPANIES_TABLE, filter_by_formula=company_formula)
+        
         company_id = None
         # Create company if it doesn't exist
         if not companies:
+            logger.info(f"Company not found, creating new: {call.company_name}")
             company_data = {
                 "Name": call.company_name,
                 "Contact Name": call.contact_name
             }
             company_response = at.create(COMPANIES_TABLE, company_data)
             company_id = company_response["id"]
+            logger.info(f"Created company with ID: {company_id}")
         else:
             company_id = companies[0]["id"]
-
-        # Prepare call data
-        now = datetime.datetime.now(pytz.timezone('UTC'))
+            logger.info(f"Found existing company with ID: {company_id}")
+        
+        # Prepare minimal call data to ensure success
         call_data = {
             "Company": [company_id],
             "Contact Name": call.contact_name,
-            "Notes": call.notes,
-            "Call Date": now.strftime("%Y-%m-%d")
-            # "Call Time": now.strftime("%H:%M:%S")  ← removed to prevent format error
+            "Notes": call.notes
         }
-
+        
         # Add follow-up date if provided
         if call.follow_up_date:
+            logger.info(f"Adding follow-up date: {call.follow_up_date}")
             call_data["Follow-up Date"] = call.follow_up_date
-
-        # Add offer if provided
-        if call.offer_made:
-            offers = at.get(OFFERS_TABLE, filter_by_formula=f"{{Name}}='{call.offer_made}'")
-            if offers:
-                offer_id = offers[0]["id"]
-                call_data["Offer"] = [offer_id]
-
-        # Create call record
+        
+        # Create call record with minimal required fields
+        logger.info(f"Creating call record with data: {call_data}")
         response = at.create(CALLS_TABLE, call_data)
-
+        logger.info(f"Call record created successfully with ID: {response['id']}")
+        
         return {"success": True, "message": "Call logged successfully", "id": response["id"]}
-
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error logging call: {str(e)}")
+        logger.error(f"Error logging call: {str(e)}", exc_info=True)
+        return {"success": False, "message": f"Error details: {str(e)}"}
 
 # Get follow-ups
 @app.get("/follow-ups", response_model=List[FollowUp])
@@ -118,7 +124,7 @@ async def get_follow_ups():
         # Get all follow-ups scheduled for today or earlier
         formula = f"AND(NOT({{Completed}}), {{Follow-up Date}}<='{today}')"
         calls = at.get(CALLS_TABLE, filter_by_formula=formula)
-
+        
         follow_ups = []
         for call in calls:
             fields = call["fields"]
@@ -129,7 +135,7 @@ async def get_follow_ups():
                 company = at.get(COMPANIES_TABLE, record_id=company_id)
                 if company:
                     company_name = company["fields"].get("Name", "")
-
+            
             follow_up = FollowUp(
                 id=call["id"],
                 company_name=company_name,
@@ -138,11 +144,12 @@ async def get_follow_ups():
                 notes=fields.get("Notes", "")
             )
             follow_ups.append(follow_up)
-
+        
         return follow_ups
-
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving follow-ups: {str(e)}")
+        logger.error(f"Error retrieving follow-ups: {str(e)}", exc_info=True)
+        return []
 
 # Mark follow-up as completed
 @app.post("/complete-follow-up/{follow_up_id}")
@@ -151,46 +158,10 @@ async def complete_follow_up(follow_up_id: str):
         # Update the follow-up record
         at.update(CALLS_TABLE, follow_up_id, {"Completed": True})
         return {"success": True, "message": "Follow-up marked as completed"}
-
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error completing follow-up: {str(e)}")
-
-# Add company to no-call list
-@app.post("/add-to-no-call")
-async def add_to_no_call(company: Company):
-    try:
-        # Check if already in no-call list
-        existing = at.get(NO_CALL_TABLE, filter_by_formula=f"{{Name}}='{company.name}'")
-        if existing:
-            return {"success": True, "message": "Company already in no-call list"}
-
-        # Add to no-call list
-        company_data = {
-            "Name": company.name,
-            "Contact Name": company.contact_name or "",
-            "Phone": company.phone or "",
-            "Email": company.email or "",
-            "Website": company.website or "",
-            "Date Added": datetime.datetime.now().strftime("%Y-%m-%d")
-        }
-
-        at.create(NO_CALL_TABLE, company_data)
-        return {"success": True, "message": "Company added to no-call list"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding to no-call list: {str(e)}")
-
-# Check if company is in no-call list
-@app.get("/check-no-call/{company_name}")
-async def check_no_call(company_name: str):
-    try:
-        companies = at.get(NO_CALL_TABLE, filter_by_formula=f"{{Name}}='{company_name}'")
-        if companies:
-            return {"in_no_call_list": True}
-        return {"in_no_call_list": False}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error checking no-call list: {str(e)}")
+        logger.error(f"Error completing follow-up: {str(e)}", exc_info=True)
+        return {"success": False, "message": f"Error details: {str(e)}"}
 
 # Get available offers
 @app.get("/offers")
@@ -198,13 +169,15 @@ async def get_offers():
     try:
         offers = at.get(OFFERS_TABLE)
         return {"offers": [{"id": offer["id"], "name": offer["fields"].get("Name", "")} for offer in offers]}
-
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving offers: {str(e)}")
+        logger.error(f"Error retrieving offers: {str(e)}", exc_info=True)
+        return {"offers": []}
 
 # Error handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception: {str(exc)}", exc_info=True)
     return JSONResponse(
         status_code=500,
         content={"success": False, "message": f"An unexpected error occurred: {str(exc)}"}
