@@ -42,14 +42,14 @@ class CallLog(BaseModel):
     notes: str
     follow_up_date: Optional[str] = None
     offer_made: Optional[str] = None
-    
+
 class Company(BaseModel):
     name: str
     contact_name: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     website: Optional[str] = None
-    
+
 class FollowUp(BaseModel):
     id: str
     company_name: str
@@ -68,7 +68,7 @@ async def log_call(call: CallLog):
     try:
         # Check if company exists
         companies = at.get(COMPANIES_TABLE, filter_by_formula=f"{{Name}}='{call.company_name}'")
-        
+
         company_id = None
         # Create company if it doesn't exist
         if not companies:
@@ -80,33 +80,33 @@ async def log_call(call: CallLog):
             company_id = company_response["id"]
         else:
             company_id = companies[0]["id"]
-        
+
         # Prepare call data
         now = datetime.datetime.now(pytz.timezone('UTC'))
         call_data = {
             "Company": [company_id],
             "Contact Name": call.contact_name,
             "Notes": call.notes,
-            "Call Date": now.strftime("%Y-%m-%d"),
-            "Call Time": now.strftime("%H:%M:%S")
+            "Call Date": now.strftime("%Y-%m-%d")
+            # "Call Time": now.strftime("%H:%M:%S")  ← removed to prevent format error
         }
-        
+
         # Add follow-up date if provided
         if call.follow_up_date:
             call_data["Follow-up Date"] = call.follow_up_date
-            
+
         # Add offer if provided
         if call.offer_made:
             offers = at.get(OFFERS_TABLE, filter_by_formula=f"{{Name}}='{call.offer_made}'")
             if offers:
                 offer_id = offers[0]["id"]
                 call_data["Offer"] = [offer_id]
-        
+
         # Create call record
         response = at.create(CALLS_TABLE, call_data)
-        
+
         return {"success": True, "message": "Call logged successfully", "id": response["id"]}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error logging call: {str(e)}")
 
@@ -118,7 +118,7 @@ async def get_follow_ups():
         # Get all follow-ups scheduled for today or earlier
         formula = f"AND(NOT({{Completed}}), {{Follow-up Date}}<='{today}')"
         calls = at.get(CALLS_TABLE, filter_by_formula=formula)
-        
+
         follow_ups = []
         for call in calls:
             fields = call["fields"]
@@ -129,7 +129,7 @@ async def get_follow_ups():
                 company = at.get(COMPANIES_TABLE, record_id=company_id)
                 if company:
                     company_name = company["fields"].get("Name", "")
-            
+
             follow_up = FollowUp(
                 id=call["id"],
                 company_name=company_name,
@@ -138,9 +138,9 @@ async def get_follow_ups():
                 notes=fields.get("Notes", "")
             )
             follow_ups.append(follow_up)
-        
+
         return follow_ups
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving follow-ups: {str(e)}")
 
@@ -151,7 +151,7 @@ async def complete_follow_up(follow_up_id: str):
         # Update the follow-up record
         at.update(CALLS_TABLE, follow_up_id, {"Completed": True})
         return {"success": True, "message": "Follow-up marked as completed"}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error completing follow-up: {str(e)}")
 
@@ -163,7 +163,7 @@ async def add_to_no_call(company: Company):
         existing = at.get(NO_CALL_TABLE, filter_by_formula=f"{{Name}}='{company.name}'")
         if existing:
             return {"success": True, "message": "Company already in no-call list"}
-        
+
         # Add to no-call list
         company_data = {
             "Name": company.name,
@@ -173,10 +173,10 @@ async def add_to_no_call(company: Company):
             "Website": company.website or "",
             "Date Added": datetime.datetime.now().strftime("%Y-%m-%d")
         }
-        
+
         at.create(NO_CALL_TABLE, company_data)
         return {"success": True, "message": "Company added to no-call list"}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error adding to no-call list: {str(e)}")
 
@@ -188,7 +188,7 @@ async def check_no_call(company_name: str):
         if companies:
             return {"in_no_call_list": True}
         return {"in_no_call_list": False}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking no-call list: {str(e)}")
 
@@ -198,7 +198,7 @@ async def get_offers():
     try:
         offers = at.get(OFFERS_TABLE)
         return {"offers": [{"id": offer["id"], "name": offer["fields"].get("Name", "")} for offer in offers]}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving offers: {str(e)}")
 
