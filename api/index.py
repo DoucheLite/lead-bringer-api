@@ -541,3 +541,17 @@ async def global_exception_handler(request: Request, exc: Exception):
 from . import sheets_adapter      # ← relative import from the same folder
 get_sheets_client = sheets_adapter.get_sheets_client
 open_workbook = sheets_adapter.open_workbook
+
+from fastapi.routing import APIRoute
+
+@app.get("/list-routes")
+async def list_routes():
+    routes = []
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods),
+                "name": route.name
+            })
+    return {"routes": routes}
