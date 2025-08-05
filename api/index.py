@@ -11,14 +11,16 @@ import json
 import base64
 from fastapi.responses import JSONResponse
 import uuid
+import socket
 
 # Load environment variables
 load_dotenv()
 
-# Configuration
-GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE")
-SPREADSHEET_NAME = os.getenv("Lead_Bringer_CRM", "Lead Bringer CRM")
-API_KEY = os.getenv("API_KEY")
+# Configuration  (keep these four – nothing else)
+GOOGLE_CREDENTIALS_B64 = os.getenv("GOOGLE_CREDENTIALS_B64")   # base-64 creds
+SPREADSHEET_ID        = os.getenv("SPREADSHEET_ID")            # long sheet ID
+SPREADSHEET_NAME      = "Lead Bringer CRM"                     # friendly name
+API_KEY               = os.getenv("API_KEY")                   # header auth
 
 # Initialize FastAPI app
 app = FastAPI(title="Lead Bringer CRM API")
@@ -58,7 +60,7 @@ class FollowUp(BaseModel):
 def get_sheets_client():
     try:
         # Decode the base64 credentials
-        credentials_json = base64.b64decode(GOOGLE_CREDENTIALS_FILE).decode('utf-8')
+        credentials_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode('utf-8')
         credentials_dict = json.loads(credentials_json)
         
         # Create credentials from the json
@@ -127,8 +129,7 @@ def get_calls_for_company(sheet, company_name):
                     "notes": call.get("Notes", ""),
                     "outcome": call.get("Outcome", ""),
                     "next_steps": call.get("Next Steps", ""),
-                    "follow_up_date": call.get("Follow-up Date", ""),
-                    "completed": call.get("Completed", "").upper() == "TRUE"
+                    "follow_up_date": call.get("Follow-Up Date", "")
                 })
         return company_calls
     except Exception as e:
@@ -146,13 +147,196 @@ def verify_api_key(x_api_key: str = Header(...)):
 async def health_check():
     return {"status": "healthy", "message": "Lead Bringer CRM API is running with Google Sheets"}
 
+# Simple test endpoint - no Google Sheets access required
+@app.get("/test")
+async def test_endpoint():
+    """Simple test endpoint that doesn't require Google Sheets."""
+    return {"status": "ok", "message": "Test endpoint works!"}
+
+# Sheets ping test endpoint
+@app.get("/sheets-ping")
+async def sheets_ping():
+    """Quick smoke-test: writes a timestamp row to Calls sheet."""
+    try:
+        # Connect to Google Sheets
+        client = get_sheets_client()
+        spreadsheet = open_workbook()
+        
+        # Access Calls sheet
+        calls_sheet = spreadsheet.worksheet("Calls")
+        
+        # Generate a timestamp
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        
+        # Create a simple row with timestamp in the ID column and note in Notes column
+        # Modified to match your actual sheet structure (9 columns, not 10)
+        row = [
+            now,                # ID/Name
+            "Test Ping",        # Company Name
+            "",                 # Contact Name
+            datetime.datetime.now().strftime("%Y-%m-%d"),  # Date
+            datetime.datetime.now().strftime("%H:%M:%S"),  # Time
+            "sheets-ping test", # Notes
+            "",                 # Outcome
+            "",                 # Next Steps
+            ""                  # Follow-Up Date
+        ]
+        
+        # Add row to Calls sheet
+        calls_sheet.append_row(row)
+        
+        return {"status": "wrote row", "timestamp": now}
+    except Exception as e:
+        error_message = str(e)
+        print(f"Sheets ping failed: {error_message}")
+        return {"success": False, "message": f"Sheets ping failed: {error_message}"}
+
+# List all API routes - useful for debugging
+@app.get("/routes")
+async def list_routes():
+    """List all registered API routes."""
+    routes = []
+    for route in app.routes:
+        routes.append({
+            "path": route.path,
+            "name": route.name,
+            "methods": list(route.methods) if route.methods else []
+        })
+    return {"routes": routes}
+
+# ---- NEW DEBUGGING ENDPOINTS ----
+
+@app.get("/check-credentials")
+async def check_credentials():
+    """Check if credentials can be decoded."""
+    try:
+        # Just try to decode the credentials
+        credentials_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode('utf-8')
+        credentials_dict = json.loads(credentials_json)
+        
+        # Return a sanitized version without the private key
+        safe_creds = {k: v for k, v in credentials_dict.items() if k != 'private_key'}
+        return {
+            "success": True,
+            "client_email": credentials_dict.get("client_email", "Not found"),
+            "project_id": credentials_dict.get("project_id", "Not found"),
+            "credentials_details": safe_creds
+        }
+    except Exception as e:
+        return {"success": False, "message": f"Error checking credentials: {str(e)}"}
+
+@app.get("/simple-sheets-test")
+async def simple_sheets_test():
+    """Try a very basic Google Sheets API connection without opening a specific sheet."""
+    try:
+        # Just try to authenticate
+        credentials_json = base64.b64decode(GOOGLE_CREDENTIALS_B64).decode('utf-8')
+        credentials_dict = json.loads(credentials_json)
+        
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file"]
+        credentials = Credentials.from_service_account_info(
+            credentials_dict, scopes=scopes
+        )
+        
+        # Create the client but don't do anything with it yet
+        client = gspread.authorize(credentials)
+        
+        # Just list available spreadsheets to test the connection
+        try:
+            available_sheets = [sheet.title for sheet in client.openall()]
+            return {
+                "success": True,
+                "message": "Successfully connected to Google Sheets API",
+                "available_sheets": available_sheets
+            }
+        except Exception as sheet_error:
+            return {
+                "success": False,
+                "message": "Authentication successful but error listing sheets",
+                "error": str(sheet_error)
+            }
+    except Exception as e:
+        return {"success": False, "message": f"Simple sheets test failed: {str(e)}"}
+
+@app.get("/network-test")
+async def network_test():
+    """Test basic internet connectivity."""
+    hosts_to_check = [
+        ("sheets.googleapis.com", 443),
+        ("www.googleapis.com", 443),
+        ("accounts.google.com", 443)
+    ]
+    
+    results = {}
+    
+    for host, port in hosts_to_check:
+        try:
+            # Try to create a socket connection
+            sock = socket.create_connection((host, port), timeout=5)
+            sock.close()
+            results[host] = "Success"
+        except Exception as e:
+            results[host] = f"Failed: {str(e)}"
+    
+    return {"success": True, "connectivity_tests": results}
+
+@app.get("/sheets-debug")
+async def sheets_debug():
+    """Detailed debugging of Google Sheets connection."""
+    try:
+        # Connect to Google Sheets
+        print("Attempting to get sheets client...")
+        client = get_sheets_client()
+        print("Got sheets client successfully!")
+        
+        print(f"Opening spreadsheet: {SPREADSHEET_NAME}")
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        print(f"Opened spreadsheet!")
+        
+        # List all worksheets
+        worksheets = spreadsheet.worksheets()
+        worksheet_names = [ws.title for ws in worksheets]
+        print(f"Available worksheets: {worksheet_names}")
+        
+        # Try to access the Calls sheet
+        print(f"Trying to access 'Calls' worksheet...")
+        try:
+            calls_sheet = spreadsheet.worksheet("Calls")
+            print("Successfully accessed 'Calls' worksheet")
+            
+            # Get the header row
+            headers = calls_sheet.row_values(1)
+            print(f"Headers in 'Calls' sheet: {headers}")
+            
+            return {
+                "success": True,
+                "spreadsheet_name": SPREADSHEET_NAME,
+                "worksheets": worksheet_names,
+                "calls_headers": headers
+            }
+        except Exception as e:
+            print(f"Error accessing 'Calls' worksheet: {str(e)}")
+            return {
+                "success": False,
+                "spreadsheet_name": SPREADSHEET_NAME,
+                "worksheets": worksheet_names,
+                "error": f"Error accessing 'Calls' worksheet: {str(e)}"
+            }
+        
+    except Exception as e:
+        error_message = str(e)
+        print(f"Sheets debug failed: {error_message}")
+        return {"success": False, "message": f"Sheets debug failed: {error_message}"}
+
+# ---- END OF NEW DEBUGGING ENDPOINTS ----
+
 # Log a call
 @app.post("/log-call", dependencies=[Depends(verify_api_key)])
 async def log_call(call: CallLog):
     try:
         # Connect to Google Sheets
         client = get_sheets_client()
-        spreadsheet = client.open(SPREADSHEET_NAME)
+        spreadsheet = open_workbook()
         
         # Access Companies sheet
         companies_sheet = spreadsheet.worksheet("Companies")
@@ -198,8 +382,7 @@ async def log_call(call: CallLog):
             call.notes,         # Notes
             "",                 # Outcome
             "",                 # Next Steps
-            call.follow_up_date or "", # Follow-up Date
-            "FALSE"             # Completed
+            call.follow_up_date or "" # Follow-up Date
         ]
         
         # Add call record
@@ -217,7 +400,7 @@ async def get_company_history(company_name: str):
     try:
         # Connect to Google Sheets
         client = get_sheets_client()
-        spreadsheet = client.open(SPREADSHEET_NAME)
+        spreadsheet = open_workbook()
         
         # Access Companies sheet
         companies_sheet = spreadsheet.worksheet("Companies")
@@ -252,7 +435,7 @@ async def search_calls(keyword: str, company_name: Optional[str] = None):
     try:
         # Connect to Google Sheets
         client = get_sheets_client()
-        spreadsheet = client.open(SPREADSHEET_NAME)
+        spreadsheet = open_workbook()
         
         # Access Calls sheet
         calls_sheet = spreadsheet.worksheet("Calls")
@@ -281,8 +464,7 @@ async def search_calls(keyword: str, company_name: Optional[str] = None):
                     "notes": call.get("Notes", ""),
                     "outcome": call.get("Outcome", ""),
                     "next_steps": call.get("Next Steps", ""),
-                    "follow_up_date": call.get("Follow-up Date", ""),
-                    "completed": call.get("Completed", "").upper() == "TRUE"
+                    "follow_up_date": call.get("Follow-Up Date", "")
                 })
         
         return {
@@ -301,7 +483,7 @@ async def get_follow_ups():
     try:
         # Connect to Google Sheets
         client = get_sheets_client()
-        spreadsheet = client.open(SPREADSHEET_NAME)
+        spreadsheet = open_workbook()
         
         # Access Calls sheet
         calls_sheet = spreadsheet.worksheet("Calls")
@@ -315,11 +497,10 @@ async def get_follow_ups():
         # Filter for follow-ups
         follow_ups = []
         for call in all_calls:
-            follow_up_date = call.get("Follow-up Date", "")
-            completed = call.get("Completed", "").upper() == "TRUE"
+            follow_up_date = call.get("Follow-Up Date", "")
             
-            # Check if there's a follow-up date and it's not completed
-            if follow_up_date and not completed:
+            # Check if there's a follow-up date
+            if follow_up_date:
                 # Only include if follow-up date is today or earlier
                 if follow_up_date <= today:
                     follow_ups.append({
@@ -331,8 +512,7 @@ async def get_follow_ups():
                         "notes": call.get("Notes", ""),
                         "outcome": call.get("Outcome", ""),
                         "next_steps": call.get("Next Steps", ""),
-                        "follow_up_date": follow_up_date,
-                        "completed": completed
+                        "follow_up_date": follow_up_date
                     })
         
         # Sort by follow-up date (ascending)
@@ -356,3 +536,8 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"success": False, "message": f"An unexpected error occurred: {str(exc)}"}
     )
+
+# Monkey-patch to use sheets_adapter
+from . import sheets_adapter      # ← relative import from the same folder
+get_sheets_client = sheets_adapter.get_sheets_client
+open_workbook = sheets_adapter.open_workbook
